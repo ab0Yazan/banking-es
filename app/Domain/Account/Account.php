@@ -2,9 +2,13 @@
 
 namespace App\Domain\Account;
 
+use App\Domain\Account\Events\MoneyDeposited;
+use App\Domain\Account\Events\MoneyWithdrawn;
 use App\Domain\Account\Exceptions\InsufficientBalance;
+use App\Domain\Shared\AggregateRoot;
+use App\Domain\Shared\Events\DomainEvent;
 
-final class Account
+final class Account extends AggregateRoot
 {
     private Money $balance;
 
@@ -26,15 +30,37 @@ final class Account
 
     public function deposit(Money $money): void
     {
-        $this->balance = $this->balance->add($money);
+        $this->recordThat(
+            new MoneyDeposited(
+                $this->id,
+                $money
+            )
+        );
     }
 
     public function withdraw(Money $money): void
     {
         if ($this->balance->lessThan($money)) {
-            throw new InsufficientBalance();
+            throw new InsufficientBalance;
         }
 
-        $this->balance = $this->balance->subtract($money);
+        $this->recordThat(
+            new MoneyWithdrawn(
+                $this->id,
+                $money
+            )
+        );
+    }
+
+    protected function apply(DomainEvent $event): void
+    {
+        match (true) {
+
+            $event instanceof MoneyDeposited => $this->balance = $this->balance->add($event->money),
+
+            $event instanceof MoneyWithdrawn => $this->balance = $this->balance->subtract($event->money),
+
+            default => null,
+        };
     }
 }

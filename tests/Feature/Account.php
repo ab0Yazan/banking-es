@@ -58,3 +58,38 @@ it('publishes an event to subscribed listeners', function () {
 
     expect($handled)->toBeTrue();
 });
+
+it('records a deposit event', function () {
+
+    $account = new Account(
+        AccountId::generate()
+    );
+
+    $account->deposit(
+        new Money(500)
+    );
+
+    $events = $account->releaseEvents();
+
+    expect($events)->toHaveCount(1);
+
+    expect($events[0])
+        ->toBeInstanceOf(MoneyDeposited::class);
+
+});
+
+it('applies deposit event', function () {
+
+    $account = new Account(
+        AccountId::generate()
+    );
+
+    $account->deposit(
+        new Money(500)
+    );
+
+    expect(
+        $account->balance()->amount()
+    )->toBe(500);
+
+});
