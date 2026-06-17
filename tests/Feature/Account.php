@@ -2,8 +2,10 @@
 
 use App\Domain\Account\Account;
 use App\Domain\Account\AccountId;
+use App\Domain\Account\Events\MoneyDeposited;
 use App\Domain\Account\Exceptions\InsufficientBalance;
 use App\Domain\Account\Money;
+use App\Infrastructure\Bus\InMemoryEventBus;
 
 it('deposits money', function () {
 
@@ -32,3 +34,27 @@ it('cannot withdraw more than balance', function () {
     );
 
 })->throws(InsufficientBalance::class);
+
+it('publishes an event to subscribed listeners', function () {
+    $bus = new InMemoryEventBus;
+
+    $handled = false;
+
+    $bus->subscribe(
+        MoneyDeposited::class,
+        function (MoneyDeposited $event) use (&$handled) {
+            expect($event->money->amount())->toBe(500);
+
+            $handled = true;
+        }
+    );
+
+    $bus->publish(
+        new MoneyDeposited(
+            AccountId::generate(),
+            new Money(500)
+        )
+    );
+
+    expect($handled)->toBeTrue();
+});
