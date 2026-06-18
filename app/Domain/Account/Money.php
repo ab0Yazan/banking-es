@@ -47,4 +47,9 @@ final readonly class Money
     {
         return $this->amount === $money->amount;
     }
+
+    public static function fromInteger(int $amount): Money
+    {
+        return new Money($amount);
+    }
 }

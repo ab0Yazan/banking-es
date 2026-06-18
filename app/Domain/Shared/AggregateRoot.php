@@ -9,13 +9,39 @@ abstract class AggregateRoot
     /**
      * @var DomainEvent[]
      */
-    private array $recordedEvents = [];
+    protected array $recordedEvents = [];
+
+    protected int $version = 0;
 
     final protected function recordThat(DomainEvent $event): void
     {
         $this->recordedEvents[] = $event;
 
         $this->apply($event);
+
+        $this->version++;
+    }
+
+    public static function reconstitute(array $storedEvents): static
+    {
+        $instance = new static;
+
+        foreach ($storedEvents as $storedEvent) {
+            $eventClass = $storedEvent->event_type;
+
+            $event = new $eventClass(...$storedEvent->event_data);
+
+            $instance->apply($event);
+
+            $instance->version++;
+        }
+
+        return $instance;
+    }
+
+    public function getVersion(): int
+    {
+        return $this->version;
     }
 
     /**
