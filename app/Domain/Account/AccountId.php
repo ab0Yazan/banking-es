@@ -29,4 +29,9 @@ final readonly class AccountId
     {
         return $this->value;
     }
+
+    public function toString(): string
+    {
+        return (string) $this;
+    }
 }

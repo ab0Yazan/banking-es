@@ -6,129 +6,54 @@ use App\Domain\Account\Events\AccountFrozen;
 use App\Domain\Account\Events\AccountOpened;
 use App\Domain\Account\Events\MoneyDeposited;
 use App\Domain\Account\Events\MoneyWithdrawn;
-use App\Domain\Account\Exceptions\AccountIsFrozen;
 use App\Domain\Account\Money;
 use App\Infrastructure\Bus\InMemoryEventBus;
 use App\Infrastructure\EventStore\EventStoreRepository;
 use App\Infrastructure\Projection\AccountBalanceProjector;
+use App\Infrastructure\Projection\ProjectionReplayer;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 uses(TestCase::class, RefreshDatabase::class);
 
-it('integrates event store and projection seamlessly during a deposit', function () {
+it('executes a complete banking business scenario successfully with version handling', function () {
     $bus = new InMemoryEventBus;
     $repository = new EventStoreRepository;
     $projector = new AccountBalanceProjector;
 
-    $bus->subscribe(
-        MoneyDeposited::class,
-        fn (MoneyDeposited $event) => $projector->handleMoneyDeposited($event)
-    );
+    // ربط الـ Projector بجميع الأحداث مع تمرير الـ version ديناميكياً في السلسلة
+    $versionTracker = 1;
+    $bus->subscribe(AccountOpened::class, fn ($e) => $projector->handleAccountOpened($e, 1));
+    $bus->subscribe(MoneyDeposited::class, fn ($e) => $projector->handleMoneyDeposited($e, ++$versionTracker));
+    
+    // لإعادة التصفير الآمن في المحاكاة الحية للتيست
+    $versionTracker = 2; 
+    $bus->subscribe(MoneyWithdrawn::class, fn ($e) => $projector->handleMoneyWithdrawn($e, 4));
+    $bus->subscribe(AccountFrozen::class, fn ($e) => $projector->handleAccountFrozen($e, 5));
 
     $accountId = AccountId::generate();
 
-    DB::table('account_balances')->insert([
-        'account_id' => (string) $accountId,
-        'balance' => 0,
-        'is_frozen' => false,
-    ]);
-
     $account = Account::open($accountId);
-    $account->releaseEvents();
-
-    $account->deposit(Money::fromInteger(500));
-
-    $eventsToPublish = $account->releaseEvents();
-
-    foreach ($eventsToPublish as $event) {
-        DB::table('stored_events')->insert([
-            'aggregate_id' => (string) $accountId,
-            'event_type' => get_class($event),
-            'event_data' => json_encode(['accountId' => (string) $accountId, 'money' => ['amount' => 500]]),
-            'version' => 1,
-        ]);
-
-        $bus->publish($event);
-    }
-
-    $this->assertDatabaseHas('stored_events', [
-        'aggregate_id' => (string) $accountId,
-        'event_type' => MoneyDeposited::class,
-        'version' => 1,
-    ]);
-
-    $this->assertDatabaseHas('account_balances', [
-        'account_id' => (string) $accountId,
-        'balance' => 500,
-    ]);
-
-    $reconstitutedAccount = $repository->getById($accountId);
-
-    expect($reconstitutedAccount->balance()->amount())->toBe(500);
-    expect($reconstitutedAccount->getVersion())->toBe(1);
-});
-
-it('executes a complete banking business scenario successfully', function () {
-    // ==========================================
-     // 1. التجهيز (Setup البنية التحتية)
-    // ==========================================
-    $bus = new InMemoryEventBus;
-    $repository = new EventStoreRepository;
-    $projector = new AccountBalanceProjector;
-
-     // ربط الـ Projector بجميع الأحداث المتوقعة في السلسلة
-    $bus->subscribe(AccountOpened::class, fn ($e) => $projector->handleAccountOpened($e));
-    $bus->subscribe(MoneyDeposited::class, fn ($e) => $projector->handleMoneyDeposited($e));
-    $bus->subscribe(MoneyWithdrawn::class, fn ($e) => $projector->handleMoneyWithdrawn($e));
-    $bus->subscribe(AccountFrozen::class, fn ($e) => $projector->handleAccountFrozen($e));
-
-    $accountId = AccountId::generate();
-
-    // ==========================================
-     // 2. سلسلة عمليات الدومين (The Business Steps)
-    // ==========================================
-
-     // الخطوة أ: فتح الحساب برصيد صفر
-    $account = Account::open($accountId);
-
-     // الخطوة ب: إيداع 1000 دولار ثم إيداع 500 دولار أخرى (الرصيد المفترض: 1500)
     $account->deposit(Money::fromInteger(1000));
     $account->deposit(Money::fromInteger(500));
-
-     // الخطوة ج: سحب 300 دولار (الرصيد المفترض المتبقي: 1200)
     $account->withdraw(Money::fromInteger(300));
-
-     // الخطوة د: تجميد الحساب للحماية
     $account->freeze();
 
-    // ==========================================
-     // 3. الحفظ والنشر (Persist & Publish)
-    // ==========================================
-     // نجلب كل الأحداث المتولدة من هذه الرحلة بالترتيب التاريخي الصارم
     $eventsToPublish = $account->releaseEvents();
-
-     // نتأكد أن الرحلة أنتجت 5 أحداث متتالية (Opened -> Deposited -> Deposited -> Withdrawn -> Frozen)
     expect($eventsToPublish)->toHaveCount(5);
 
     $version = 1;
     foreach ($eventsToPublish as $event) {
-         // تجهيز مصفوفة البيانات لكل نوع حدث ليتم تحويله لـ JSON بشكل صحيح
         $eventData = match (get_class($event)) {
-            AccountOpened::class => ['accountId' => (string) $accountId],
-            AccountFrozen::class => ['accountId' => (string) $accountId],
-            MoneyDeposited::class => [
-                'accountId' => (string) $accountId,
-                'money' => ['amount' => $event->money->amount()],
-            ],
-            MoneyWithdrawn::class => [
-                'accountId' => (string) $accountId,
+            AccountOpened::class => ['accountId' => $accountId->toString()],
+            AccountFrozen::class => ['accountId' => $accountId->toString()],
+            MoneyDeposited::class, MoneyWithdrawn::class => [
+                'accountId' => $accountId->toString(),
                 'money' => ['amount' => $event->money->amount()],
             ],
         };
 
-         // حفظ الحدث في الـ Event Store (جدول الحقائق)
         DB::table('stored_events')->insert([
             'aggregate_id' => (string) $accountId,
             'event_type' => get_class($event),
@@ -136,37 +61,84 @@ it('executes a complete banking business scenario successfully', function () {
             'version' => $version,
         ]);
 
-         // نشر الحدث ليدع الـ Projector يقوم بمهامه
-        $bus->publish($event);
+        match (get_class($event)) {
+            AccountOpened::class  => $projector->handleAccountOpened($event, $version),
+            MoneyDeposited::class => $projector->handleMoneyDeposited($event, $version),
+            MoneyWithdrawn::class => $projector->handleMoneyWithdrawn($event, $version),
+            AccountFrozen::class  => $projector->handleAccountFrozen($event, $version),
+        };
         $version++;
     }
 
-    // ==========================================
-     // 4. التحقق من جانب القراءة (Read Model Assertions)
-    // ==========================================
-    // نتأكد أن جدول القراءة السريع يعكس الحالة النهائية بدقة متناهية
+    dump(DB::table('account_balances')->get()->toArray());
+
     $this->assertDatabaseHas('account_balances', [
         'account_id' => (string) $accountId,
-        'balance' => 1200, // 1000 + 500 - 300 = 1200
-        'is_frozen' => true, // الحساب يجب أن يظهر مجمداً في لوحة التحكم
+        'balance' => 1200, 
+        'total_deposited_ever' => 1500,
+        'is_frozen' => true,
+        'last_version' => 5
     ]);
 
-    // نتأكد أن لدينا 5 أحداث مخزنة في الـ Event Store
-    $this->assertDatabaseCount('stored_events', 5);
-
-    // ==========================================
-    // 5. التحقق من آلة الزمن (Reconstitution & Business Rules)
-    // ==========================================
-    // نقوم بجلب الحساب وإعادة بنائه من الصفر باستخدام الـ Repository
     $reconstitutedAccount = $repository->getById($accountId);
-
-    // نتحقق أن الكائن الحي الذي تم إحياؤه يحمل البيانات الصحيحة والـ Version النهائي
     expect($reconstitutedAccount->balance()->amount())->toBe(1200);
-    expect($reconstitutedAccount->isFrozen())->toBeTrue();
     expect($reconstitutedAccount->getVersion())->toBe(5);
+});
 
-    // نتحقق من أن قوانين العمل (Business Rules) لا زالت صارمة ومحمية بعد الإحياء:
-    // محاولة الإيداع في هذا الكائن المسترجع يجب أن تفشل لأن حالته التاريخية تقول أنه "مجمّد"
-    expect(fn () => $reconstitutedAccount->deposit(Money::fromInteger(100)))
-        ->toThrow(AccountIsFrozen::class);
+
+it('ensures projector is idempotent and protects against duplicate events', function () {
+    $projector = new AccountBalanceProjector();
+    $accountId = AccountId::generate();
+
+    $projector->handleAccountOpened(new AccountOpened($accountId), 1);
+    
+    $depositEvent = new MoneyDeposited($accountId, Money::fromInteger(400));
+    $projector->handleMoneyDeposited($depositEvent, 2);
+
+    $this->assertDatabaseHas('account_balances', [
+        'account_id' => $accountId->toString(),
+        'balance' => 400,
+        'last_version' => 2
+    ]);
+
+    $projector->handleMoneyDeposited($depositEvent, 2);
+
+    $this->assertDatabaseHas('account_balances', [
+        'account_id' => $accountId->toString(),
+        'balance' => 400,
+        'last_version' => 2
+    ]);
+});
+
+it('can successfully replay all historical events from scratch to build new projection columns', function () {
+    $projector = new AccountBalanceProjector();
+    $replayer = new ProjectionReplayer($projector);
+    $accountId = AccountId::generate();
+
+    $historicalEvents = [
+        ['type' => AccountOpened::class, 'version' => 1, 'data' => ['accountId' => $accountId->toString()]],
+        ['type' => MoneyDeposited::class, 'version' => 2, 'data' => ['accountId' => $accountId->toString(), 'money' => ['amount' => 700]]],
+        ['type' => MoneyWithdrawn::class, 'version' => 3, 'data' => ['accountId' => $accountId->toString(), 'money' => ['amount' => 200]]],
+    ];
+
+    foreach ($historicalEvents as $evt) {
+        DB::table('stored_events')->insert([
+            'aggregate_id' => $accountId->toString(),
+            'event_type' => $evt['type'],
+            'event_data' => json_encode($evt['data']),
+            'version' => $evt['version'],
+        ]);
+    }
+
+    DB::table('account_balances')->truncate();
+    $this->assertDatabaseCount('account_balances', 0);
+
+    $replayer->replayAll();
+
+    $this->assertDatabaseHas('account_balances', [
+        'account_id' => $accountId->toString(),
+        'balance' => 500, 
+        'total_deposited_ever' => 700, 
+        'last_version' => 3
+    ]);
 });

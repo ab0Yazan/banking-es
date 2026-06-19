@@ -2,41 +2,67 @@
 
 namespace App\Infrastructure\Projection;
 
-use App\Domain\Account\Events\AccountFrozen;
 use App\Domain\Account\Events\AccountOpened;
+use App\Domain\Account\Events\AccountFrozen;
 use App\Domain\Account\Events\MoneyDeposited;
 use App\Domain\Account\Events\MoneyWithdrawn;
 use Illuminate\Support\Facades\DB;
 
 final class AccountBalanceProjector
 {
-    public function handleAccountOpened(AccountOpened $event): void
+    public function handleAccountOpened(AccountOpened $event, int $version): void
     {
+        $exists = DB::table('account_balances')->where('account_id', $event->accountId->toString())->exists();
+        if ($exists) return;
+
         DB::table('account_balances')->insert([
-            'account_id' => (string) $event->accountId,
+            'account_id' => $event->accountId->toString(),
             'balance' => 0,
+            'total_deposited_ever' => 0,
             'is_frozen' => false,
+            'last_version' => $version
         ]);
     }
 
-    public function handleMoneyDeposited(MoneyDeposited $event): void
+    public function handleMoneyDeposited(MoneyDeposited $event, int $version): void
     {
+        $current = DB::table('account_balances')->where('account_id', $event->accountId->toString())->first();
+        if (!$current || $current->last_version >= $version) {
+            return; 
+        }
+
         DB::table('account_balances')
-            ->where('account_id', (string) $event->accountId)
-            ->increment('balance', $event->money->amount());
+            ->where('account_id', $event->accountId->toString())
+            ->update([
+                'balance' => $current->balance + $event->money->amount(),
+                'total_deposited_ever' => $current->total_deposited_ever + $event->money->amount(), 
+                'last_version' => $version
+            ]);
     }
 
-    public function handleMoneyWithdrawn(MoneyWithdrawn $event): void
+    public function handleMoneyWithdrawn(MoneyWithdrawn $event, int $version): void
     {
+        $current = DB::table('account_balances')->where('account_id', $event->accountId->toString())->first();
+        if (!$current || $current->last_version >= $version) return;
+
         DB::table('account_balances')
-            ->where('account_id', (string) $event->accountId)
-            ->decrement('balance', $event->money->amount());
+            ->where('account_id', $event->accountId->toString())
+            ->update([
+                'balance' => $current->balance - $event->money->amount(),
+                'last_version' => $version
+            ]);
     }
 
-    public function handleAccountFrozen(AccountFrozen $event): void
+    public function handleAccountFrozen(AccountFrozen $event, int $version): void
     {
+        $current = DB::table('account_balances')->where('account_id', $event->accountId->toString())->first();
+        if (!$current || $current->last_version >= $version) return;
+
         DB::table('account_balances')
-            ->where('account_id', (string) $event->accountId)
-            ->update(['is_frozen' => true]);
+            ->where('account_id', $event->accountId->toString())
+            ->update([
+                'is_frozen' => true,
+                'last_version' => $version
+            ]);
     }
 }
