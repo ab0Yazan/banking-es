@@ -12,6 +12,8 @@ use App\Infrastructure\EventStore\EventStoreRepository;
 use App\Infrastructure\Projection\AccountBalanceProjector;
 use App\Infrastructure\Projection\ProjectionReplayer;
 use App\Infrastructure\Queries\AccountDepositReportQuery;
+use App\Infrastructure\Reactors\AccountNotificationReactor;
+use App\Infrastructure\Services\NotificationServiceInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -174,15 +176,14 @@ it('uses relational database capabilities and updates timestamps during projecti
     expect($rowAfter->updated_at)->not->toBe($rowBefore->updated_at);
 });
 
-
 it('calculates total deposits accurately for a dynamic date range via event query', function () {
-    $query = new AccountDepositReportQuery();
-    
+    $query = new AccountDepositReportQuery;
+
     $accountId = AccountId::generate();
     $otherAccountId = AccountId::generate();
 
     $targetFrom = new DateTimeImmutable('2026-06-10 00:00:00');
-    $targetTo   = new DateTimeImmutable('2026-06-15 23:59:59');
+    $targetTo = new DateTimeImmutable('2026-06-15 23:59:59');
 
     $inRangeEvents = [
         ['amount' => 1000, 'date' => '2026-06-11 10:00:00'],
@@ -192,66 +193,84 @@ it('calculates total deposits accurately for a dynamic date range via event quer
     foreach ($inRangeEvents as $evt) {
         DB::table('stored_events')->insert([
             'aggregate_id' => $accountId->toString(),
-            'event_type'   => MoneyDeposited::class,
-            'event_data'   => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => $evt['amount']]]),
-            'version'      => rand(1, 10),
-            'created_at'   => $evt['date'] 
+            'event_type' => MoneyDeposited::class,
+            'event_data' => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => $evt['amount']]]),
+            'version' => rand(1, 10),
+            'created_at' => $evt['date'],
         ]);
     }
 
     $outOfRangeEvents = [
-        ['amount' => rand(100, 900), 'date' => '2026-06-05 09:00:00'], 
-        ['amount' => rand(100, 900), 'date' => '2026-06-20 18:00:00'], 
+        ['amount' => rand(100, 900), 'date' => '2026-06-05 09:00:00'],
+        ['amount' => rand(100, 900), 'date' => '2026-06-20 18:00:00'],
     ];
 
     foreach ($outOfRangeEvents as $evt) {
         DB::table('stored_events')->insert([
             'aggregate_id' => $accountId->toString(),
-            'event_type'   => MoneyDeposited::class,
-            'event_data'   => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => $evt['amount']]]),
-            'version'      => rand(11, 20),
-            'created_at'   => $evt['date']
+            'event_type' => MoneyDeposited::class,
+            'event_data' => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => $evt['amount']]]),
+            'version' => rand(11, 20),
+            'created_at' => $evt['date'],
         ]);
     }
 
     DB::table('stored_events')->insert([
         'aggregate_id' => $otherAccountId->toString(),
-        'event_type'   => MoneyDeposited::class,
-        'event_data'   => json_encode(['accountId' => $otherAccountId->toString(), 'money' => ['amount' => 9999]]),
-        'version'      => 1,
-        'created_at'   => '2026-06-12 12:00:00'
+        'event_type' => MoneyDeposited::class,
+        'event_data' => json_encode(['accountId' => $otherAccountId->toString(), 'money' => ['amount' => 9999]]),
+        'version' => 1,
+        'created_at' => '2026-06-12 12:00:00',
     ]);
 
     $totalResult = $query->execute($accountId, $targetFrom, $targetTo);
 
-   
     expect($totalResult)->toBe(1500);
 });
 
 it('ignores other event types like withdrawals when calculating deposit reports', function () {
-    $query = new AccountDepositReportQuery();
+    $query = new AccountDepositReportQuery;
     $accountId = AccountId::generate();
-    
+
     $from = new DateTimeImmutable('2026-06-01 00:00:00');
-    $to   = new DateTimeImmutable('2026-06-30 23:59:59');
+    $to = new DateTimeImmutable('2026-06-30 23:59:59');
 
     DB::table('stored_events')->insert([
         'aggregate_id' => $accountId->toString(),
-        'event_type'   => MoneyDeposited::class,
-        'event_data'   => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => 700]]),
-        'version'      => 1,
-        'created_at'   => '2026-06-15 12:00:00'
+        'event_type' => MoneyDeposited::class,
+        'event_data' => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => 700]]),
+        'version' => 1,
+        'created_at' => '2026-06-15 12:00:00',
     ]);
 
     DB::table('stored_events')->insert([
         'aggregate_id' => $accountId->toString(),
-        'event_type'   => MoneyWithdrawn::class,
-        'event_data'   => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => 300]]),
-        'version'      => 2,
-        'created_at'   => '2026-06-16 12:00:00'
+        'event_type' => MoneyWithdrawn::class,
+        'event_data' => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => 300]]),
+        'version' => 2,
+        'created_at' => '2026-06-16 12:00:00',
     ]);
 
     $totalResult = $query->execute($accountId, $from, $to);
 
     expect($totalResult)->toBe(700);
+});
+
+it('triggers an SMS notification side-effect when money is withdrawn', function () {
+    $notificationServiceMock = Mockery::mock(NotificationServiceInterface::class);
+
+    $accountId = AccountId::generate();
+    $expectedMessage = 'تنبيه بنكي: تم سحب مبلغ 300 من حسابك بنجاح.';
+
+    $notificationServiceMock->shouldReceive('sendSms')
+        ->once()
+        ->with($accountId->toString(), $expectedMessage)
+        ->andReturn(true);
+
+    $reactor = new AccountNotificationReactor($notificationServiceMock);
+
+    $event = new MoneyWithdrawn($accountId, Money::fromInteger(300));
+    $reactor->handleMoneyWithdrawn($event);
+
+    expect(true)->toBeTrue();
 });
