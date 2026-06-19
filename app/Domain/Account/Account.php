@@ -8,6 +8,7 @@ use App\Domain\Account\Events\MoneyDeposited;
 use App\Domain\Account\Events\MoneyWithdrawn;
 use App\Domain\Account\Exceptions\AccountIsFrozen;
 use App\Domain\Account\Exceptions\InsufficientBalance;
+use App\Domain\Account\Exceptions\MinimumDepositRequired;
 use App\Domain\Shared\AggregateRoot;
 use App\Domain\Shared\Events\DomainEvent;
 
@@ -45,6 +46,10 @@ final class Account extends AggregateRoot
     {
         if ($this->isFrozen) {
             throw new AccountIsFrozen;
+        }
+
+        if ($money->amount() < 20) {
+            throw new MinimumDepositRequired;
         }
 
         $this->recordThat(new MoneyDeposited($this->id, $money));

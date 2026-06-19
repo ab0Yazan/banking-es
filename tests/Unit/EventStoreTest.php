@@ -6,6 +6,8 @@ use App\Domain\Account\Events\AccountFrozen;
 use App\Domain\Account\Events\AccountOpened;
 use App\Domain\Account\Events\MoneyDeposited;
 use App\Domain\Account\Events\MoneyWithdrawn;
+use App\Domain\Account\Exceptions\InsufficientBalance;
+use App\Domain\Account\Exceptions\MinimumDepositRequired;
 use App\Domain\Account\Money;
 use App\Infrastructure\Bus\InMemoryEventBus;
 use App\Infrastructure\EventStore\EventStoreRepository;
@@ -190,12 +192,13 @@ it('calculates total deposits accurately for a dynamic date range via event quer
         ['amount' => 500,  'date' => '2026-06-14 15:30:00'],
     ];
 
+    $version = 1;
     foreach ($inRangeEvents as $evt) {
         DB::table('stored_events')->insert([
             'aggregate_id' => $accountId->toString(),
             'event_type' => MoneyDeposited::class,
             'event_data' => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => $evt['amount']]]),
-            'version' => rand(1, 10),
+            'version' => $version++,
             'created_at' => $evt['date'],
         ]);
     }
@@ -210,7 +213,7 @@ it('calculates total deposits accurately for a dynamic date range via event quer
             'aggregate_id' => $accountId->toString(),
             'event_type' => MoneyDeposited::class,
             'event_data' => json_encode(['accountId' => $accountId->toString(), 'money' => ['amount' => $evt['amount']]]),
-            'version' => rand(11, 20),
+            'version' => $version++,
             'created_at' => $evt['date'],
         ]);
     }
@@ -273,4 +276,23 @@ it('triggers an SMS notification side-effect when money is withdrawn', function 
     $reactor->handleMoneyWithdrawn($event);
 
     expect(true)->toBeTrue();
+});
+
+it('enforces minimum deposit business rule strictly', function () {
+    $accountId = AccountId::generate();
+    $account = Account::open($accountId);
+
+    expect(fn () => $account->deposit(Money::fromInteger(15)))
+        ->toThrow(MinimumDepositRequired::class);
+});
+
+it('prevents withdrawal if aggregate state balance is insufficient', function () {
+    $accountId = AccountId::generate();
+    $account = Account::open($accountId);
+
+    $account->deposit(Money::fromInteger(50));
+    $account->releaseEvents();
+
+    expect(fn () => $account->withdraw(Money::fromInteger(60)))
+        ->toThrow(InsufficientBalance::class);
 });
