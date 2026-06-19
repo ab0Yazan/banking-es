@@ -17,4 +17,12 @@ final readonly class MoneyWithdrawn extends Event
             $occurredAt ?? new \DateTimeImmutable
         );
     }
+
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            AccountId::fromString($data['accountId']),
+            Money::fromInteger($data['money']['amount'])
+        );
+    }
 }

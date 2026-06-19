@@ -11,25 +11,15 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('event_store', function (Blueprint $table) {
+        Schema::create('stored_events', function (Blueprint $table) {
             $table->id();
-
-            // Aggregate identity
-            $table->string('aggregate_uuid');
-            $table->string('aggregate_type');
-
-            // Event data
+            $table->string('aggregate_id');
             $table->string('event_type');
             $table->json('event_data');
+            $table->integer('version');
+            $table->timestamp('created_at')->useCurrent();
 
-            // Versioning (VERY important)
-            $table->unsignedBigInteger('version');
-
-            $table->timestamp('occurred_at');
-
-            $table->timestamps();
-
-            $table->index(['aggregate_uuid', 'aggregate_type']);
+            $table->unique(['aggregate_id', 'version']);
         });
     }
 

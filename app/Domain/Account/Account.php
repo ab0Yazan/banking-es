@@ -19,7 +19,10 @@ final class Account extends AggregateRoot
 
     private bool $isFrozen = false;
 
-    private function __construct() {}
+    protected function __construct()
+    {
+        $this->balance = Money::fromInteger(0);
+    }
 
     public static function open(AccountId $id): self
     {
@@ -78,7 +81,7 @@ final class Account extends AggregateRoot
 
     private function hydrateAccount(AccountOpened $event): void
     {
-        $this->id = $event->id;
+        $this->id = $event->accountId;
         $this->balance = new Money(0);
         $this->isFrozen = false;
     }

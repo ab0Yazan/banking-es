@@ -29,7 +29,11 @@ abstract class AggregateRoot
         foreach ($storedEvents as $storedEvent) {
             $eventClass = $storedEvent->event_type;
 
-            $event = new $eventClass(...$storedEvent->event_data);
+            if (method_exists($eventClass, 'fromArray')) {
+                $event = $eventClass::fromArray($storedEvent->event_data);
+            } else {
+                $event = new $eventClass(...$storedEvent->event_data);
+            }
 
             $instance->apply($event);
 
