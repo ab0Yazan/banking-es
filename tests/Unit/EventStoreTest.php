@@ -26,9 +26,9 @@ it('executes a complete banking business scenario successfully with version hand
     $versionTracker = 1;
     $bus->subscribe(AccountOpened::class, fn ($e) => $projector->handleAccountOpened($e, 1));
     $bus->subscribe(MoneyDeposited::class, fn ($e) => $projector->handleMoneyDeposited($e, ++$versionTracker));
-    
+
     // لإعادة التصفير الآمن في المحاكاة الحية للتيست
-    $versionTracker = 2; 
+    $versionTracker = 2;
     $bus->subscribe(MoneyWithdrawn::class, fn ($e) => $projector->handleMoneyWithdrawn($e, 4));
     $bus->subscribe(AccountFrozen::class, fn ($e) => $projector->handleAccountFrozen($e, 5));
 
@@ -62,10 +62,10 @@ it('executes a complete banking business scenario successfully with version hand
         ]);
 
         match (get_class($event)) {
-            AccountOpened::class  => $projector->handleAccountOpened($event, $version),
+            AccountOpened::class => $projector->handleAccountOpened($event, $version),
             MoneyDeposited::class => $projector->handleMoneyDeposited($event, $version),
             MoneyWithdrawn::class => $projector->handleMoneyWithdrawn($event, $version),
-            AccountFrozen::class  => $projector->handleAccountFrozen($event, $version),
+            AccountFrozen::class => $projector->handleAccountFrozen($event, $version),
         };
         $version++;
     }
@@ -74,10 +74,10 @@ it('executes a complete banking business scenario successfully with version hand
 
     $this->assertDatabaseHas('account_balances', [
         'account_id' => (string) $accountId,
-        'balance' => 1200, 
+        'balance' => 1200,
         'total_deposited_ever' => 1500,
         'is_frozen' => true,
-        'last_version' => 5
+        'last_version' => 5,
     ]);
 
     $reconstitutedAccount = $repository->getById($accountId);
@@ -85,20 +85,19 @@ it('executes a complete banking business scenario successfully with version hand
     expect($reconstitutedAccount->getVersion())->toBe(5);
 });
 
-
 it('ensures projector is idempotent and protects against duplicate events', function () {
-    $projector = new AccountBalanceProjector();
+    $projector = new AccountBalanceProjector;
     $accountId = AccountId::generate();
 
     $projector->handleAccountOpened(new AccountOpened($accountId), 1);
-    
+
     $depositEvent = new MoneyDeposited($accountId, Money::fromInteger(400));
     $projector->handleMoneyDeposited($depositEvent, 2);
 
     $this->assertDatabaseHas('account_balances', [
         'account_id' => $accountId->toString(),
         'balance' => 400,
-        'last_version' => 2
+        'last_version' => 2,
     ]);
 
     $projector->handleMoneyDeposited($depositEvent, 2);
@@ -106,12 +105,12 @@ it('ensures projector is idempotent and protects against duplicate events', func
     $this->assertDatabaseHas('account_balances', [
         'account_id' => $accountId->toString(),
         'balance' => 400,
-        'last_version' => 2
+        'last_version' => 2,
     ]);
 });
 
 it('can successfully replay all historical events from scratch to build new projection columns', function () {
-    $projector = new AccountBalanceProjector();
+    $projector = new AccountBalanceProjector;
     $replayer = new ProjectionReplayer($projector);
     $accountId = AccountId::generate();
 
@@ -137,8 +136,39 @@ it('can successfully replay all historical events from scratch to build new proj
 
     $this->assertDatabaseHas('account_balances', [
         'account_id' => $accountId->toString(),
-        'balance' => 500, 
-        'total_deposited_ever' => 700, 
-        'last_version' => 3
+        'balance' => 500,
+        'total_deposited_ever' => 700,
+        'last_version' => 3,
     ]);
+});
+
+it('uses relational database capabilities and updates timestamps during projection', function () {
+    $projector = new AccountBalanceProjector;
+    $accountId = AccountId::generate();
+
+    $projector->handleAccountOpened(
+        new AccountOpened($accountId),
+        1
+    );
+
+    $projector->handleMoneyDeposited(
+        new MoneyDeposited($accountId, Money::fromInteger(1000)),
+        2
+    );
+
+    $rowBefore = DB::table('account_balances')->where('account_id', $accountId->toString())->first();
+    expect($rowBefore->updated_at)->not->toBeNull();
+
+    $this->travel(1)->seconds();
+
+    $projector->handleMoneyWithdrawn(
+        new MoneyWithdrawn($accountId, Money::fromInteger(400)),
+        3
+    );
+
+    $rowAfter = DB::table('account_balances')->where('account_id', $accountId->toString())->first();
+
+    expect($rowAfter->balance)->toBe(600);
+    expect($rowAfter->last_version)->toBe(3);
+    expect($rowAfter->updated_at)->not->toBe($rowBefore->updated_at);
 });
