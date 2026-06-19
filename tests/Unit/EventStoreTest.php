@@ -296,3 +296,55 @@ it('prevents withdrawal if aggregate state balance is insufficient', function ()
     expect(fn () => $account->withdraw(Money::fromInteger(60)))
         ->toThrow(InsufficientBalance::class);
 });
+
+it('manages version and recorded events via parent class while state is managed by state object', function () {
+    $accountId = AccountId::generate();
+
+    // 1. فتح الحساب (ينتج عنه حدث واحد)
+    $account = Account::open($accountId);
+
+    // نتحقق من أن الـ version صعد لـ 1 تلقائياً بفضل الـ Parent
+    expect($account->getVersion())->toBe(1);
+
+    // 2. إيداع مبلغين متتاليين دون تفريغ الصندوق
+    $account->deposit(Money::fromInteger(500));
+    $account->deposit(Money::fromInteger(300));
+
+    // الـ version يجب أن يصبح 3 الآن (1 لـ Opened + 2 لـ Deposited)
+    expect($account->getVersion())->toBe(3);
+
+    // سحب الأحداث المنتجة عبر دالة الـ Parent العامة
+    $releasedEvents = $account->releaseEvents();
+
+    // يجب أن نجد 3 أحداث بالتمام والكمال في الصندوق
+    expect($releasedEvents)->toHaveCount(3);
+
+    // بعد الـ release، صندوق الأحداث الداخلي في الـ Parent يجب أن يصبح فارغاً تماماً
+    expect($account->releaseEvents())->toHaveCount(0);
+});
+
+it('reconstitutes aggregate state and version perfectly using the parent class logic', function () {
+    $accountId = AccountId::generate();
+
+    $storedEventsFromDb = [
+        (object) [
+            'event_type' => AccountOpened::class,
+            'event_data' => ["accountId" => $accountId],
+        ],
+        (object) [
+            'event_type' => MoneyDeposited::class,
+            'event_data' => ["accountId" => $accountId, "money" => ["amount" => 1500]],
+        ],
+        (object) [
+            'event_type' => MoneyWithdrawn::class,
+            'event_data' => ["accountId" => $accountId, "money" => ["amount" => 500]],
+        ],
+    ];
+
+    $account = Account::reconstitute($storedEventsFromDb);
+
+    expect($account->getVersion())->toBe(3);
+
+    expect(fn () => $account->withdraw(Money::fromInteger(1200)))
+        ->toThrow(InsufficientBalance::class);
+});

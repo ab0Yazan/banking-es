@@ -112,4 +112,4 @@ it('does not record multiple freeze events if already frozen', function () {
 
     $events = $account->releaseEvents();
     expect($events)->toHaveCount(1);
-});
+})->throws(AccountIsFrozen::class);

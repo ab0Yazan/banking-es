@@ -14,20 +14,16 @@ use App\Domain\Shared\Events\DomainEvent;
 
 final class Account extends AggregateRoot
 {
-    private Money $balance;
+    private AccountState $state;
 
-    private AccountId $id;
-
-    private bool $isFrozen = false;
-
-    protected function __construct()
+    public function __construct()
     {
-        $this->balance = Money::fromInteger(0);
+        $this->state = new AccountState();
     }
 
     public static function open(AccountId $id): self
     {
-        $account = new self;
+        $account = new self();
         $account->recordThat(new AccountOpened($id));
 
         return $account;
@@ -35,16 +31,16 @@ final class Account extends AggregateRoot
 
     public function freeze(): void
     {
-        if ($this->isFrozen) {
-            return;
+        if ($this->state->isFrozen) {
+            throw new AccountIsFrozen;
         }
 
-        $this->recordThat(new AccountFrozen($this->id));
+        $this->recordThat(new AccountFrozen($this->state->id));
     }
 
     public function deposit(Money $money): void
     {
-        if ($this->isFrozen) {
+        if ($this->state->isFrozen) {
             throw new AccountIsFrozen;
         }
 
@@ -52,57 +48,44 @@ final class Account extends AggregateRoot
             throw new MinimumDepositRequired;
         }
 
-        $this->recordThat(new MoneyDeposited($this->id, $money));
+        $this->recordThat(new MoneyDeposited($this->state->id, $money));
     }
 
     public function withdraw(Money $money): void
     {
-        if ($this->isFrozen) {
+        if ($this->state->isFrozen) {
             throw new AccountIsFrozen;
         }
 
-        if ($this->balance->lessThan($money)) {
+        if ($this->state->balance < $money->amount()) {
             throw new InsufficientBalance;
         }
 
-        $this->recordThat(
-            new MoneyWithdrawn(
-                $this->id,
-                $money
-            )
-        );
+        $this->recordThat(new MoneyWithdrawn($this->state->id, $money));
     }
 
+    /**
+     * 🔴 هنا يتم تنفيذ الـ abstract method المطلوبة من الأب
+     * عندما يقوم الأب باستدعاء $instance->apply($event) في كوده،
+     * يتم التقاط الحدث هنا وتمريره فوراً لكائن الـ State المساعد.
+     */
     protected function apply(DomainEvent $event): void
     {
-        match (true) {
-            $event instanceof AccountOpened => $this->hydrateAccount($event),
-            $event instanceof MoneyDeposited => $this->balance = $this->balance->add($event->money),
-            $event instanceof MoneyWithdrawn => $this->balance = $this->balance->subtract($event->money),
-            $event instanceof AccountFrozen => $this->isFrozen = true,
-            default => null,
-        };
-    }
-
-    private function hydrateAccount(AccountOpened $event): void
-    {
-        $this->id = $event->accountId;
-        $this->balance = new Money(0);
-        $this->isFrozen = false;
+        $this->state->apply($event);
     }
 
     public function id(): AccountId
     {
-        return $this->id;
+        return $this->state->id;
     }
 
     public function balance(): Money
     {
-        return $this->balance;
+        return new Money($this->state->balance);
     }
 
     public function isFrozen(): bool
     {
-        return $this->isFrozen;
+        return $this->state->isFrozen;
     }
 }
