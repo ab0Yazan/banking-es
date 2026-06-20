@@ -4,8 +4,12 @@ use App\Domain\Account\Account;
 use App\Domain\Account\AccountId;
 use App\Domain\Account\Events\AccountFrozen;
 use App\Domain\Account\Events\AccountOpened;
+use App\Domain\Account\Events\CardIssued;
 use App\Domain\Account\Events\MoneyDeposited;
 use App\Domain\Account\Events\MoneyWithdrawn;
+use App\Domain\Account\Events\MoneyWithdrawnViaCard;
+use App\Domain\Account\Exceptions\CardLimitExceeded;
+use App\Domain\Account\Exceptions\CardNotFound;
 use App\Domain\Account\Exceptions\InsufficientBalance;
 use App\Domain\Account\Exceptions\MinimumDepositRequired;
 use App\Domain\Account\Money;
@@ -300,26 +304,19 @@ it('prevents withdrawal if aggregate state balance is insufficient', function ()
 it('manages version and recorded events via parent class while state is managed by state object', function () {
     $accountId = AccountId::generate();
 
-    // 1. فتح الحساب (ينتج عنه حدث واحد)
     $account = Account::open($accountId);
 
-    // نتحقق من أن الـ version صعد لـ 1 تلقائياً بفضل الـ Parent
     expect($account->getVersion())->toBe(1);
 
-    // 2. إيداع مبلغين متتاليين دون تفريغ الصندوق
     $account->deposit(Money::fromInteger(500));
     $account->deposit(Money::fromInteger(300));
 
-    // الـ version يجب أن يصبح 3 الآن (1 لـ Opened + 2 لـ Deposited)
     expect($account->getVersion())->toBe(3);
 
-    // سحب الأحداث المنتجة عبر دالة الـ Parent العامة
     $releasedEvents = $account->releaseEvents();
 
-    // يجب أن نجد 3 أحداث بالتمام والكمال في الصندوق
     expect($releasedEvents)->toHaveCount(3);
 
-    // بعد الـ release، صندوق الأحداث الداخلي في الـ Parent يجب أن يصبح فارغاً تماماً
     expect($account->releaseEvents())->toHaveCount(0);
 });
 
@@ -329,15 +326,15 @@ it('reconstitutes aggregate state and version perfectly using the parent class l
     $storedEventsFromDb = [
         (object) [
             'event_type' => AccountOpened::class,
-            'event_data' => ["accountId" => $accountId],
+            'event_data' => ['accountId' => $accountId],
         ],
         (object) [
             'event_type' => MoneyDeposited::class,
-            'event_data' => ["accountId" => $accountId, "money" => ["amount" => 1500]],
+            'event_data' => ['accountId' => $accountId, 'money' => ['amount' => 1500]],
         ],
         (object) [
             'event_type' => MoneyWithdrawn::class,
-            'event_data' => ["accountId" => $accountId, "money" => ["amount" => 500]],
+            'event_data' => ['accountId' => $accountId, 'money' => ['amount' => 500]],
         ],
     ];
 
@@ -347,4 +344,70 @@ it('reconstitutes aggregate state and version perfectly using the parent class l
 
     expect(fn () => $account->withdraw(Money::fromInteger(1200)))
         ->toThrow(InsufficientBalance::class);
+});
+
+it('manages debit cards as aggregate partials and enforces their business rules', function () {
+    $accountId = AccountId::generate();
+
+    $account = Account::open($accountId);
+    $account->deposit(Money::fromInteger(1000));
+    $account->releaseEvents();
+
+    $account->issueCard('CARD-123', 300); 
+    $account->issueCard('CARD-456', 800); 
+
+    $account->withdrawViaCard('CARD-123', Money::fromInteger(200));
+
+    expect($account->balance()->amount())->toBe(800);
+
+
+    expect(fn () => $account->withdrawViaCard('CARD-123', Money::fromInteger(150)))
+        ->toThrow(CardLimitExceeded::class);
+
+
+    $account->withdrawViaCard('CARD-123', Money::fromInteger(50)); 
+
+    expect(fn () => $account->withdrawViaCard('CARD-456', Money::fromInteger(760)))
+        ->toThrow(InsufficientBalance::class);
+});
+
+it('throws an exception when trying to use a non-existent card', function () {
+    $accountId = AccountId::generate();
+    $account = Account::open($accountId);
+    $account->deposit(Money::fromInteger(500));
+
+    expect(fn () => $account->withdrawViaCard('CARD-FAKE', Money::fromInteger(100)))
+        ->toThrow(CardNotFound::class);
+});
+
+it('can reconstitute perfectly with all its partials from past history', function () {
+    $accountId = AccountId::generate();
+
+    $storedEventsFromDb = [
+        (object) [
+            'event_type' => AccountOpened::class,
+            'event_data' => ["accountId" => $accountId],
+        ],
+        (object) [
+            'event_type' => MoneyDeposited::class,
+            'event_data' => ["accountId" => $accountId, "money" => ["amount" => 1000]],
+        ],
+        (object) [
+            'event_type' => CardIssued::class,
+            'event_data' => ["accountId" => $accountId, "cardNumber" => 'CARD-789', "dailyLimit" => 500],
+        ],
+        (object) [
+            'event_type' => MoneyWithdrawnViaCard::class,
+            'event_data' => ["accountId" => $accountId, "cardNumber" => 'CARD-789', "money" => ["amount" => 400]],
+        ],
+    ];
+
+    $account = Account::reconstitute($storedEventsFromDb);
+
+    expect($account->getVersion())->toBe(4);
+
+    expect($account->balance()->amount())->toBe(600);
+
+    expect(fn () => $account->withdrawViaCard('CARD-789', Money::fromInteger(150)))
+        ->toThrow(CardLimitExceeded::class);
 });
